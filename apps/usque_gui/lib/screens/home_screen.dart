@@ -1,10 +1,12 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../core/app_strings.dart';
-import '../core/chain_home_status.dart';
-import '../core/chain_scope_presentation.dart';
 import '../core/connection_presentation.dart';
 import '../core/usque_motion.dart';
 import '../core/usque_theme.dart';
@@ -13,13 +15,10 @@ import '../state/app_controller.dart';
 import '../widgets/common.dart';
 import '../widgets/connection_ring.dart';
 import '../widgets/controller_selector.dart';
-import '../widgets/country_flag.dart';
-import '../widgets/home_desktop_controls.dart';
 import '../widgets/live_duration.dart';
-import '../widgets/mobile_home_panels.dart';
 import '../widgets/profile_identity_dialog.dart';
 import '../widgets/sparkline.dart';
-import 'chain_proxy_screen.dart';
+import 'diagnostics_screen.dart';
 
 /// The instrument panel: one connection control, one status readout, and the
 /// live numbers that prove the tunnel is doing something.
@@ -27,203 +26,188 @@ import 'chain_proxy_screen.dart';
 /// Each block subscribes to its own slice of the controller, so a traffic
 /// sample arriving every second repaints two counters instead of the page.
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({required this.controller, this.onOpenVpnGate, super.key});
+  const HomeScreen({required this.controller, super.key});
 
   final AppController controller;
-  final VoidCallback? onOpenVpnGate;
+
+  /// Below this the hero and the readout stack instead of sitting side by side.
+  static const double _splitWidth = 820;
 
   @override
   Widget build(BuildContext context) {
     final AppStrings strings = controller.strings;
-    final viewport = MediaQuery.sizeOf(context);
-    final bool compact =
-        viewport.width < 760 ||
-        defaultTargetPlatform == TargetPlatform.android &&
-            viewport.shortestSide < 600;
     return PageFrame(
       title: strings.get('home'),
-      showHeading: defaultTargetPlatform != TargetPlatform.windows || compact,
-      titleWidget: compact ? const _NarrowBrandHeader() : null,
+      header: MediaQuery.sizeOf(context).width < 760
+          ? const _NarrowBrandHeader()
+          : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          if (!compact) _ErrorSlot(controller: controller, strings: strings),
-          if (compact && defaultTargetPlatform == TargetPlatform.android)
-            _VpnGateReadout(
-              controller: controller,
-              strings: strings,
-              onOpen:
-                  onOpenVpnGate ??
-                  () => Navigator.of(context).push<void>(
-                    MaterialPageRoute(
-                      builder: (_) => ChainProxyScreen(controller: controller),
-                    ),
-                  ),
-            ),
-          if (compact)
-            PanelStack(
-              spacing: 24 + mobileHomeExpansion(context) * 8,
-              children: [
-                _ConnectionHero(
-                  controller: controller,
-                  strings: strings,
-                  compact: true,
-                ),
-                MobileTrafficPanel(controller: controller),
-                MobileConnectionOverview(
-                  controller: controller,
-                  details: _HomeDetails(
-                    controller: controller,
-                    strings: strings,
-                  ),
-                ),
-              ],
-            )
-          else
-            _DesktopHomeConnection(
-              controller: controller,
-              strings: strings,
-              onOpenChainProxy:
-                  onOpenVpnGate ??
-                  () => Navigator.of(context).push<void>(
-                    MaterialPageRoute(
-                      builder: (_) => ChainProxyScreen(controller: controller),
-                    ),
-                  ),
-            ),
-          if (!compact) ...[
-            const SizedBox(height: 32),
-            Divider(height: 1, color: UsqueTokens.of(context).hairline),
-            _DesktopLocalProxies(controller: controller),
-            Divider(height: 1, color: UsqueTokens.of(context).hairline),
-            const SizedBox(height: 20),
-            _TrafficGrid(controller: controller, strings: strings),
-          ],
+          _ErrorSlot(controller: controller, strings: strings),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final Widget hero = _ConnectionHero(
+                controller: controller,
+                strings: strings,
+              );
+              final Widget readout = _EngineReadout(
+                controller: controller,
+                strings: strings,
+              );
+              final bool split = constraints.maxWidth >= _splitWidth;
+              final Widget location = _ExitPanel(
+                controller: controller,
+                strings: strings,
+                fillRemaining: split,
+              );
+              if (split) {
+                return _WideHomeSplit(
+                  leading: hero,
+                  trailing: location,
+                  readout: readout,
+                );
+              }
+              return PanelStack(children: <Widget>[hero, readout, location]);
+            },
+          ),
+          const SizedBox(height: 16),
+          _TrafficGrid(controller: controller, strings: strings),
         ],
       ),
     );
   }
 }
 
-class _DesktopHomeConnection extends StatelessWidget {
-  const _DesktopHomeConnection({
-    required this.controller,
-    required this.strings,
-    required this.onOpenChainProxy,
-  });
-
-  final AppController controller;
-  final AppStrings strings;
-  final VoidCallback onOpenChainProxy;
+/// Wide home: the connection hero sets the row height, and the location panel
+/// fills whatever remains under engine status so the right column does not
+/// leave a gap of page canvas. If the location readout is taller than that
+/// remainder, the row grows instead of overflowing.
+class _WideHomeSplit extends MultiChildRenderObjectWidget {
+  _WideHomeSplit({
+    required Widget leading,
+    required Widget readout,
+    required Widget trailing,
+  }) : super(children: <Widget>[leading, readout, trailing]);
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final hero = _ConnectionHero(controller: controller, strings: strings);
-      final controls = HomeDesktopControls(
-        controller: controller,
-        onOpenChainProxy: onOpenChainProxy,
-      );
-      if (constraints.maxWidth >= 860 &&
-          MediaQuery.textScalerOf(context).scale(14) <= 21) {
-        final controlWidth = constraints.maxWidth >= 940 ? 320.0 : 280.0;
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: hero),
-            const SizedBox(width: 32),
-            SizedBox(width: controlWidth, child: controls),
-          ],
-        );
-      }
-      return PanelStack(spacing: 32, children: [hero, controls]);
-    },
-  );
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderWideHomeSplit(textDirection: Directionality.of(context));
+  }
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderWideHomeSplit renderObject,
+  ) {
+    renderObject.textDirection = Directionality.of(context);
+  }
 }
 
-typedef _LocalProxiesView = ({
-  bool http,
-  bool socks,
-  String httpAddress,
-  String socksAddress,
-});
+class _WideHomeSplitParentData extends ContainerBoxParentData<RenderBox> {}
 
-class _DesktopLocalProxies extends StatelessWidget {
-  const _DesktopLocalProxies({required this.controller});
-  final AppController controller;
+class _RenderWideHomeSplit extends RenderBox
+    with
+        ContainerRenderObjectMixin<RenderBox, _WideHomeSplitParentData>,
+        RenderBoxContainerDefaultsMixin<RenderBox, _WideHomeSplitParentData> {
+  _RenderWideHomeSplit({required this._textDirection});
+
+  static const double _gap = 16;
+  static const double _leadingShare = 5 / 9;
+
+  TextDirection _textDirection;
+  TextDirection get textDirection => _textDirection;
+  set textDirection(TextDirection value) {
+    if (_textDirection == value) {
+      return;
+    }
+    _textDirection = value;
+    markNeedsLayout();
+  }
 
   @override
-  Widget build(BuildContext context) => ControllerSelector<_LocalProxiesView>(
-    controller: controller,
-    active: (app) => app.section == AppSection.home,
-    selector: (app) {
-      final profile = app.activeProfile;
-      return (
-        http: profile.frontends.http,
-        socks: profile.frontends.socks5,
-        httpAddress: profile.proxy.httpListeners.join(', '),
-        socksAddress: profile.proxy.socksListeners.join(', '),
+  void setupParentData(RenderBox child) {
+    if (child.parentData is! _WideHomeSplitParentData) {
+      child.parentData = _WideHomeSplitParentData();
+    }
+  }
+
+  @override
+  void performLayout() {
+    final RenderBox leading = firstChild!;
+    final RenderBox readout = childAfter(leading)!;
+    final RenderBox trailing = childAfter(readout)!;
+
+    final double maxWidth = constraints.maxWidth;
+    final double inner = math.max(0, maxWidth - _gap);
+    final double leadingWidth = inner * _leadingShare;
+    final double trailingWidth = inner - leadingWidth;
+    final double maxHeight = constraints.maxHeight;
+
+    leading.layout(
+      BoxConstraints(maxWidth: leadingWidth, maxHeight: maxHeight),
+      parentUsesSize: true,
+    );
+    readout.layout(
+      BoxConstraints(maxWidth: trailingWidth, maxHeight: maxHeight),
+      parentUsesSize: true,
+    );
+
+    final double remaining = math.max(
+      0,
+      leading.size.height - readout.size.height - _gap,
+    );
+    trailing.layout(
+      BoxConstraints(
+        minWidth: trailingWidth,
+        maxWidth: trailingWidth,
+        maxHeight: maxHeight,
+      ),
+      parentUsesSize: true,
+    );
+    if (trailing.size.height < remaining) {
+      trailing.layout(
+        BoxConstraints.tightFor(width: trailingWidth, height: remaining),
+        parentUsesSize: true,
       );
-    },
-    builder: (context, view) {
-      final strings = controller.strings;
-      Widget output(IconData icon, String name, bool enabled, String address) =>
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                size: 16,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              Text(name, style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(width: 8),
-              Flexible(child: MonoValue(value: enabled ? address : '—')),
-            ],
-          );
-      final values = Wrap(
-        spacing: 24,
-        runSpacing: 12,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Text(
-            strings.get('home_local_proxies'),
-            style: Theme.of(context).textTheme.titleSmall,
-          ),
-          output(LucideIcons.globe, 'HTTP', view.http, view.httpAddress),
-          output(LucideIcons.network, 'SOCKS5', view.socks, view.socksAddress),
-        ],
-      );
-      final manage = TextButton.icon(
-        key: const ValueKey('home-manage-proxies'),
-        onPressed: () => controller.selectSection(AppSection.proxy),
-        icon: const Icon(LucideIcons.chevronRight, size: 16),
-        iconAlignment: IconAlignment.end,
-        label: Text(strings.get('home_manage_proxies')),
-      );
-      return ContentSection(
-        key: const ValueKey('home-local-proxies'),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: LayoutBuilder(
-          builder: (context, constraints) =>
-              constraints.maxWidth >= 760 &&
-                  MediaQuery.textScalerOf(context).scale(14) <= 21
-              ? Row(
-                  children: [
-                    Expanded(child: values),
-                    const SizedBox(width: 16),
-                    manage,
-                  ],
-                )
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [values, const SizedBox(height: 8), manage],
-                ),
+    }
+
+    size = constraints.constrain(
+      Size(
+        maxWidth,
+        math.max(
+          leading.size.height,
+          readout.size.height + _gap + trailing.size.height,
         ),
-      );
-    },
-  );
+      ),
+    );
+
+    final bool ltr = _textDirection == TextDirection.ltr;
+    final double leadingX = ltr ? 0 : trailingWidth + _gap;
+    final double trailingX = ltr ? leadingWidth + _gap : 0;
+    (leading.parentData! as _WideHomeSplitParentData).offset = Offset(
+      leadingX,
+      0,
+    );
+    (readout.parentData! as _WideHomeSplitParentData).offset = Offset(
+      trailingX,
+      0,
+    );
+    (trailing.parentData! as _WideHomeSplitParentData).offset = Offset(
+      trailingX,
+      readout.size.height + _gap,
+    );
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    defaultPaint(context, offset);
+  }
+
+  @override
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) {
+    return defaultHitTestChildren(result, position: position);
+  }
 }
 
 class _NarrowBrandHeader extends StatelessWidget {
@@ -248,147 +232,6 @@ class _NarrowBrandHeader extends StatelessWidget {
       ),
     );
   }
-}
-
-class _VpnGateReadout extends StatelessWidget {
-  const _VpnGateReadout({
-    required this.controller,
-    required this.strings,
-    required this.onOpen,
-  });
-  final AppController controller;
-  final AppStrings strings;
-  final VoidCallback onOpen;
-
-  @override
-  Widget build(BuildContext context) =>
-      ControllerSelector<
-        ({
-          bool enabled,
-          ConnectionPhase phase,
-          VpnGateStatus status,
-          ChainExitStatus chain,
-          ChainSource source,
-          ChainScopePresentation scope,
-        })
-      >(
-        controller: controller,
-        active: (app) => app.section == AppSection.home,
-        selector: (app) => (
-          enabled: app.activeProfile.chainEnabled,
-          phase: app.snapshot.phase,
-          status: app.snapshot.vpnGate,
-          chain: app.snapshot.chainExit,
-          source: app.activeProfile.chainSource,
-          scope: ChainScopePresentation.of(
-            app.snapshot,
-            app.networkSettings.state?.appliedProfile,
-            isAndroid: defaultTargetPlatform == TargetPlatform.android,
-          ),
-        ),
-        builder: (context, view) {
-          final homeStatus = ChainHomeStatus.of(
-            phase: view.phase,
-            chainEnabled: view.enabled,
-            chainStage: view.chain.stage,
-            gateStage: view.status.stage,
-            hasCurrentProfile: view.chain.currentProfile != null,
-            hasGateServer: view.status.server != null,
-          );
-          if (!homeStatus.showChainRow && view.scope.isEmpty) {
-            return const SizedBox.shrink();
-          }
-          final status = view.status;
-          final server = status.server;
-          final warpKey = ChainHomeStatus.warpLabelKey(
-            phase: view.phase,
-            chainStage: view.chain.stage,
-            gateStage: status.stage,
-            reportedStage: view.chain.warpStage ?? status.warpStage,
-          );
-          final phaseLabel =
-              !homeStatus.showChainRow && view.phase == ConnectionPhase.error
-              ? strings.get('error')
-              : homeStatus.label(strings);
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 24),
-            child: Semantics(
-              container: true,
-              liveRegion: true,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Align(
-                    alignment: AlignmentDirectional.centerStart,
-                    child: TextButton(
-                      key: const ValueKey('home-vpn-gate-settings'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: Theme.of(
-                          context,
-                        ).colorScheme.onSurface,
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        alignment: AlignmentDirectional.centerStart,
-                      ),
-                      onPressed: onOpen,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Flexible(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'WARP → ${view.chain.currentProfile?.name ?? view.scope.source?.label ?? view.source.label}',
-                                  style: Theme.of(
-                                    context,
-                                  ).textTheme.titleMedium,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  phaseLabel,
-                                  style: Theme.of(context).textTheme.bodySmall
-                                      ?.copyWith(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onSurfaceVariant,
-                                      ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          const Icon(LucideIcons.chevronRight, size: 18),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'WARP: ${warpKey == null ? '—' : strings.get(warpKey)}',
-                    key: const ValueKey('home-chain-warp-status'),
-                  ),
-                  if (view.chain.currentProfile case final current?)
-                    Text(current.source.label),
-                  if (server != null && view.chain.currentProfile == null)
-                    Row(
-                      children: [
-                        CountryFlag(countryCode: server.countryCode),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '${strings.get(status.connected ? 'gate_current' : 'gate_draft')}: ${server.countryCode ?? '—'} · ${server.ip}',
-                            style: const TextStyle(fontFamily: UsqueFonts.mono),
-                          ),
-                        ),
-                      ],
-                    ),
-                ],
-              ),
-            ),
-          );
-        },
-      );
 }
 
 class _ErrorSlot extends StatelessWidget {
@@ -420,39 +263,42 @@ class _ErrorSlot extends StatelessWidget {
 typedef _HeroView = ({
   ConnectionPhase phase,
   bool busy,
-  String? errorCode,
   String profileName,
-  bool identityReady,
-  bool chainEnabled,
-  String chainStage,
-  String gateStage,
-  bool chainProfile,
-  bool gateServer,
+  FrontendSettings frontends,
+  bool systemProxy,
+  String geoDirect,
+  _OutputPhases runtime,
 });
 
-_HeroView _heroView(AppController controller) => (
-  phase: controller.snapshot.phase,
-  busy: controller.busy,
-  errorCode: controller.snapshot.errorCode,
-  profileName: controller.activeProfile.name,
-  identityReady:
-      controller.identityState(controller.activeProfileId) ==
-      ProfileIdentityState.ready,
-  chainEnabled: controller.activeProfile.chainEnabled,
-  chainStage: controller.snapshot.chainExit.stage,
-  gateStage: controller.snapshot.vpnGate.stage,
-  chainProfile: controller.snapshot.chainExit.currentProfile != null,
-  gateServer: controller.snapshot.vpnGate.server != null,
-);
+/// Runtime phase of each output, flattened so the hero compares by value and
+/// ignores the new list object that arrives with every traffic sample.
+typedef _OutputPhases = ({
+  FrontendPhase? tunnel,
+  FrontendPhase? socks5,
+  FrontendPhase? http,
+  FrontendPhase? systemProxy,
+});
+
+_OutputPhases _outputPhases(EngineSnapshot snapshot) {
+  FrontendPhase? phaseOf(FrontendKind kind) {
+    for (final status in snapshot.frontends) {
+      if (status.kind == kind) {
+        return status.phase;
+      }
+    }
+    return null;
+  }
+
+  return (
+    tunnel: phaseOf(FrontendKind.tunnel),
+    socks5: phaseOf(FrontendKind.socks5),
+    http: phaseOf(FrontendKind.http),
+    systemProxy: phaseOf(FrontendKind.systemProxy),
+  );
+}
 
 class _ConnectionHero extends StatelessWidget {
-  const _ConnectionHero({
-    required this.controller,
-    required this.strings,
-    this.compact = false,
-  });
-
-  final bool compact;
+  const _ConnectionHero({required this.controller, required this.strings});
 
   final AppController controller;
   final AppStrings strings;
@@ -462,218 +308,109 @@ class _ConnectionHero extends StatelessWidget {
     return ControllerSelector<_HeroView>(
       controller: controller,
       active: (controller) => controller.section == AppSection.home,
-      selector: _heroView,
+      selector: (controller) => (
+        phase: controller.snapshot.phase,
+        busy: controller.busy,
+        profileName: controller.activeProfile.name,
+        frontends: controller.activeProfile.frontends,
+        systemProxy: controller.activeProfile.proxy.systemProxy,
+        geoDirect: controller.activeProfile.geoDirectCountries.join(','),
+        runtime: _outputPhases(controller.snapshot),
+      ),
       builder: (context, view) => _buildHero(context, view),
     );
   }
 
   Widget _buildHero(BuildContext context, _HeroView view) {
-    final theme = Theme.of(context);
-    final connection = ConnectionPresentation.of(view.phase);
-    final chainStatus = ChainHomeStatus.of(
-      phase: view.phase,
-      chainEnabled: view.chainEnabled,
-      chainStage: view.chainStage,
-      gateStage: view.gateStage,
-      hasCurrentProfile: view.chainProfile,
-      hasGateServer: view.gateServer,
+    final ThemeData theme = Theme.of(context);
+    final ConnectionPresentation presentation = ConnectionPresentation.of(
+      view.phase,
     );
-    final status = chainStatus.drivesHome
-        ? chainStatus.label(strings)
-        : strings.get(connection.labelKey);
-    final error = view.phase == ConnectionPhase.error;
-    final recoveryBlocked =
-        error && view.errorCode == 'WINDOWS_RECOVERY_BLOCKED';
-    final primaryRetry = error && !recoveryBlocked && view.identityReady;
-    final action = strings.get(
-      primaryRetry
-          ? 'retry'
-          : error && !recoveryBlocked && !view.identityReady
-          ? 'configure_identity'
-          : connection.actionKey,
-    );
-    final canAct =
-        (!view.busy ||
-            view.phase == ConnectionPhase.preparing ||
-            view.phase == ConnectionPhase.connectingH3 ||
-            view.phase == ConnectionPhase.connectingH2 ||
-            view.phase == ConnectionPhase.reconnecting) &&
-        view.phase != ConnectionPhase.disconnecting &&
-        !recoveryBlocked;
-    Widget ring(double size) => ConnectionRing(
-      phase: view.phase,
-      presentation: chainStatus.drivesHome
-          ? chainStatus.presentation(connection)
-          : null,
-      busy: view.busy,
-      actionLabel: action,
-      semanticLabel: '${strings.get('connection_status')}: $status',
-      size: size,
-      compactControl: compact,
-      onPressed: !canAct
-          ? null
-          : primaryRetry
-          ? controller.retry
-          : () => _connectOrRepairIdentity(context),
-    );
-    Widget statusText() => Semantics(
-      liveRegion: true,
-      child: FadeThroughSwitcher(
-        alignment: compact
-            ? Alignment.center
-            : AlignmentDirectional.centerStart,
-        child: Text(
-          status,
-          key: ValueKey(
-            chainStatus.drivesHome ? chainStatus.labelKey : view.phase,
-          ),
-          textAlign: compact ? TextAlign.center : TextAlign.start,
-          style: compact
-              ? theme.textTheme.headlineSmall
-              : theme.textTheme.headlineMedium,
-        ),
-      ),
-    );
-    Widget recovery() => Wrap(
-      alignment: compact ? WrapAlignment.start : WrapAlignment.center,
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        if (!error)
-          OutlinedButton.icon(
-            onPressed: view.busy ? null : controller.retry,
-            icon: const Icon(LucideIcons.refreshCw),
-            label: Text(strings.get('retry')),
-          ),
-      ],
-    );
-    if (compact) {
-      final expansion = mobileHomeExpansion(context);
-      final ringSize = 148 + expansion * 32;
-      return ContentSection(
-        key: const ValueKey('mobile-connection-section'),
-        padding: EdgeInsets.symmetric(
-          horizontal: 0,
-          vertical: 12 + expansion * 12,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Text(
-                    strings.get('active_profile'),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 2,
-                  child: Tooltip(
-                    message: view.profileName,
-                    child: Text(
-                      view.profileName,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.end,
-                      style: theme.textTheme.titleLarge,
-                    ),
-                  ),
-                ),
-              ],
+    final String status = strings.get(presentation.labelKey);
+    final String action = strings.get(presentation.actionKey);
+
+    return Panel(
+      padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Text(
+            strings.get('active_profile').toUpperCase(),
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              letterSpacing: 1.1,
             ),
-            const SizedBox(height: 8),
-            Center(child: ring(ringSize)),
-            const SizedBox(height: 6),
-            statusText(),
-            const SizedBox(height: 10),
-            _ErrorSlot(controller: controller, strings: strings),
-            if (connection.recoverable && !error) ...[
-              Center(
-                child: OutlinedButton.icon(
+          ),
+          const SizedBox(height: 5),
+          Text(
+            view.profileName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.titleLarge,
+          ),
+          const SizedBox(height: 22),
+          Center(
+            child: LayoutBuilder(
+              builder: (context, constraints) => ConnectionRing(
+                phase: view.phase,
+                busy: view.busy,
+                actionLabel: action,
+                semanticLabel: '${strings.get('connection_status')}: $status',
+                size: constraints.maxWidth.clamp(180, 244).toDouble(),
+                onPressed: view.busy
+                    ? null
+                    : () => _connectOrRepairIdentity(context),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Center(
+            child: FadeThroughSwitcher(
+              child: Text(
+                status,
+                key: ValueKey<ConnectionPhase>(view.phase),
+                textAlign: TextAlign.center,
+                style: theme.textTheme.headlineSmall,
+              ),
+            ),
+          ),
+          if (presentation.recoverable) ...<Widget>[
+            const SizedBox(height: 16),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                OutlinedButton.icon(
                   onPressed: view.busy ? null : controller.retry,
-                  icon: const Icon(LucideIcons.refreshCw, size: 18),
+                  icon: const Icon(LucideIcons.refreshCw),
                   label: Text(strings.get('retry')),
                 ),
-              ),
-              const SizedBox(height: 10),
-            ],
-            Divider(height: 1, color: UsqueTokens.of(context).hairline),
-            const SizedBox(height: 8),
-            _ProtectionSummary(controller: controller),
-          ],
-        ),
-      );
-    }
-    Widget overview() => Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              strings.get('active_profile'),
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Tooltip(
-                message: view.profileName,
-                child: Text(
-                  view.profileName,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleMedium,
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => DiagnosticsScreen(controller: controller),
+                    ),
+                  ),
+                  icon: const Icon(LucideIcons.activity),
+                  label: Text(strings.get('diagnostics')),
                 ),
-              ),
+              ],
             ),
           ],
-        ),
-        const SizedBox(height: 16),
-        statusText(),
-        const SizedBox(height: 20),
-        _DesktopSessionReadout(controller: controller),
-        if (connection.recoverable && !error) ...[
+          const SizedBox(height: 22),
+          Divider(height: 1, color: UsqueTokens.of(context).hairline),
+          const SizedBox(height: 18),
+          Text(
+            strings.get('outputs').toUpperCase(),
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              letterSpacing: 1.1,
+            ),
+          ),
           const SizedBox(height: 12),
-          recovery(),
+          _FrontendChips(view: view, strings: strings),
         ],
-        _HomeDetails(controller: controller, strings: strings),
-      ],
-    );
-    return ContentSection(
-      key: const ValueKey('home-desktop-connection'),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final split =
-              constraints.maxWidth >= 560 &&
-              MediaQuery.textScalerOf(context).scale(14) <= 21;
-          if (split) {
-            final size = (constraints.maxWidth - 200 - 32).clamp(240.0, 330.0);
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(width: size, child: ring(size)),
-                const SizedBox(width: 32),
-                Expanded(child: overview()),
-              ],
-            );
-          }
-          return PanelStack(
-            spacing: 24,
-            children: [
-              Center(
-                child: ring(constraints.maxWidth.clamp(180, 330).toDouble()),
-              ),
-              overview(),
-            ],
-          );
-        },
       ),
     );
   }
@@ -696,110 +433,312 @@ class _ConnectionHero extends StatelessWidget {
   }
 }
 
-class _TrafficGrid extends StatelessWidget {
-  const _TrafficGrid({required this.controller, required this.strings});
+class _FrontendChips extends StatelessWidget {
+  const _FrontendChips({required this.view, required this.strings});
+
+  final _HeroView view;
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final configured = <FrontendKind, FrontendPhase?>{
+      if (view.frontends.tunnel) FrontendKind.tunnel: view.runtime.tunnel,
+      if (view.frontends.socks5) FrontendKind.socks5: view.runtime.socks5,
+      if (view.frontends.http) FrontendKind.http: view.runtime.http,
+      if (view.systemProxy) FrontendKind.systemProxy: view.runtime.systemProxy,
+    };
+    final enabled = configured.entries.toList(growable: false);
+    if (enabled.isEmpty) {
+      return Text(
+        strings.get('channel_only_warning'),
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      );
+    }
+    final chips = enabled.map((entry) {
+      final FrontendPhase? phase = entry.value;
+      final bool active = phase == FrontendPhase.active;
+      final bool degraded =
+          phase == FrontendPhase.degraded ||
+          phase == FrontendPhase.reconnecting ||
+          phase == FrontendPhase.error;
+      return StatusPill(
+        label: switch (entry.key) {
+          FrontendKind.tunnel => strings.tunnelOutputLabel(
+            defaultTargetPlatform,
+          ),
+          FrontendKind.socks5 => 'SOCKS5',
+          FrontendKind.http => 'HTTP',
+          FrontendKind.systemProxy => strings.get('system_proxy'),
+        },
+        tone: degraded
+            ? StatusTone.warning
+            : active
+            ? StatusTone.success
+            : StatusTone.neutral,
+        dim: !active && !degraded,
+      );
+    }).toList();
+    if (view.geoDirect.isNotEmpty) {
+      final codes = view.geoDirect.split(',');
+      final label = codes.contains('CN') ? 'CN' : codes.first;
+      chips.add(
+        StatusPill(
+          icon: LucideIcons.globe,
+          label: strings.get('geo_chip').replaceAll('{current}', label),
+          tone: StatusTone.neutral,
+        ),
+      );
+    }
+    return Wrap(spacing: 8, runSpacing: 8, children: chips);
+  }
+}
+
+typedef _ReadoutView = ({
+  String? transport,
+  String? addressFamily,
+  DateTime? connectedAt,
+  bool alwaysOn,
+  bool platformLockdown,
+  String killSwitchLabel,
+});
+
+class _EngineReadout extends StatelessWidget {
+  const _EngineReadout({required this.controller, required this.strings});
+
   final AppController controller;
   final AppStrings strings;
 
   @override
-  Widget build(BuildContext context) => ControllerSelector<bool>(
-    controller: controller,
-    selector: (app) => app.section == AppSection.home,
-    builder: (context, active) => ListenableBuilder(
-      listenable: Listenable.merge(
-        active ? [controller, controller.quality] : [],
-      ),
-      builder: (context, _) {
-        final tokens = UsqueTokens.of(context);
-        final snapshot = controller.snapshot;
-        final quality = controller.quality;
-        final down = snapshot.isConnected
-            ? quality.trace((point) => point.downloadBytesPerSecond)
-            : const <int?>[];
-        final up = snapshot.isConnected
-            ? quality.trace((point) => point.uploadBytesPerSecond)
-            : const <int?>[];
-        final note = strings.get(
-          homeTrafficNoteKey(
-            controller,
-            hasSamples:
-                down.any((value) => value != null) ||
-                up.any((value) => value != null),
-          ),
-        );
-        Widget card(bool download) => _TrafficReadout(
-          direction: download ? 'download' : 'upload',
-          note: note,
-          icon: download ? LucideIcons.arrowDown : LucideIcons.arrowUp,
-          label: strings.get(download ? 'download' : 'upload'),
-          bytesPerSecond: !snapshot.isConnected
-              ? null
-              : download
-              ? snapshot.downloadBytesPerSecond
-              : snapshot.uploadBytesPerSecond,
-          color: download ? tokens.inbound : tokens.outbound,
-          samples: download ? down : up,
-        );
-        return ContentSection(
-          title: strings.get('home_traffic'),
-          trailing: Text(note, style: Theme.of(context).textTheme.bodySmall),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              if (constraints.maxWidth >= 560 &&
-                  MediaQuery.textScalerOf(context).scale(14) <= 21) {
-                return Row(
-                  children: [
-                    Expanded(child: card(true)),
-                    const SizedBox(width: 16),
-                    Expanded(child: card(false)),
-                  ],
-                );
-              }
-              return Column(
-                children: [card(true), const SizedBox(height: 16), card(false)],
-              );
-            },
+  Widget build(BuildContext context) {
+    return ControllerSelector<_ReadoutView>(
+      controller: controller,
+      active: (controller) => controller.section == AppSection.home,
+      selector: (controller) {
+        final EngineSnapshot snapshot = controller.snapshot;
+        return (
+          transport: snapshot.transport,
+          addressFamily: snapshot.addressFamily,
+          connectedAt: snapshot.connectedAt,
+          alwaysOn: snapshot.alwaysOn,
+          platformLockdown: snapshot.platformLockdown,
+          killSwitchLabel: strings.get(
+            killSwitchStatusKey(
+              profile: controller.activeProfile,
+              snapshot: snapshot,
+            ),
           ),
         );
       },
-    ),
-  );
+      builder: (context, view) => _buildReadout(context, view),
+    );
+  }
+
+  Widget _buildReadout(BuildContext context, _ReadoutView view) {
+    final Color hairline = UsqueTokens.of(context).hairline;
+    final Widget divider = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Divider(height: 1, color: hairline),
+    );
+
+    return Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          SectionTitle(
+            icon: LucideIcons.activity,
+            title: strings.get('engine_status'),
+          ),
+          const SizedBox(height: 20),
+          ReadoutRow(
+            icon: LucideIcons.cable,
+            label: strings.get('protocol'),
+            value: view.transport == null
+                ? const EmptyValue(label: '—')
+                : MonoValue(value: view.transport!),
+          ),
+          divider,
+          ReadoutRow(
+            icon: LucideIcons.network,
+            label: strings.get('address_family'),
+            value: view.addressFamily == null
+                ? const EmptyValue(label: '—')
+                : MonoValue(value: view.addressFamily!),
+          ),
+          divider,
+          ReadoutRow(
+            icon: LucideIcons.clock3,
+            label: strings.get('duration'),
+            value: LiveDuration(since: view.connectedAt),
+          ),
+          divider,
+          ReadoutRow.text(
+            context,
+            icon: LucideIcons.shieldCheck,
+            label: strings.get('kill_switch'),
+            value: view.killSwitchLabel,
+          ),
+          if (view.alwaysOn) ...<Widget>[
+            divider,
+            ReadoutRow.text(
+              context,
+              icon: LucideIcons.shield,
+              label: strings.get('always_on'),
+              value: strings.get('on'),
+            ),
+          ],
+          if (view.platformLockdown) ...<Widget>[
+            divider,
+            ReadoutRow.text(
+              context,
+              icon: LucideIcons.shieldBan,
+              label: strings.get('lockdown'),
+              value: strings.get('on'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
-/// Desktop and phone charts share timestamped observations, including zeros
-/// and gaps. Widget rebuilds and unchanged values never alter the history.
-class _TrafficReadout extends StatelessWidget {
-  const _TrafficReadout({
-    required this.direction,
-    required this.note,
+typedef _TrafficView = ({int down, int up, bool live});
+
+class _TrafficGrid extends StatelessWidget {
+  const _TrafficGrid({required this.controller, required this.strings});
+
+  final AppController controller;
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    return ControllerSelector<_TrafficView>(
+      controller: controller,
+      active: (controller) => controller.section == AppSection.home,
+      selector: (controller) => (
+        down: controller.snapshot.downloadBytesPerSecond,
+        up: controller.snapshot.uploadBytesPerSecond,
+        live: controller.snapshot.isConnected,
+      ),
+      builder: (context, view) {
+        final UsqueTokens tokens = UsqueTokens.of(context);
+        final Widget download = _MetricCard(
+          icon: LucideIcons.arrowDown,
+          label: strings.get('download'),
+          bytesPerSecond: view.down,
+          color: tokens.inbound,
+          live: view.live,
+        );
+        final Widget upload = _MetricCard(
+          icon: LucideIcons.arrowUp,
+          label: strings.get('upload'),
+          bytesPerSecond: view.up,
+          color: tokens.outbound,
+          live: view.live,
+        );
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth >= 560) {
+              return Row(
+                children: <Widget>[
+                  Expanded(child: download),
+                  const SizedBox(width: 16),
+                  Expanded(child: upload),
+                ],
+              );
+            }
+            return Column(
+              children: <Widget>[download, const SizedBox(height: 16), upload],
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+/// One traffic direction: a badge, the current rate, and the recent shape of
+/// that rate.
+class _MetricCard extends StatefulWidget {
+  const _MetricCard({
     required this.icon,
     required this.label,
     required this.bytesPerSecond,
     required this.color,
-    required this.samples,
+    required this.live,
   });
-  final String direction;
-  final String note;
+
   final IconData icon;
   final String label;
-  final int? bytesPerSecond;
+  final int bytesPerSecond;
   final Color color;
-  final List<int?> samples;
+
+  /// History only accumulates while the tunnel is up; a disconnect clears it.
+  final bool live;
+
+  @override
+  State<_MetricCard> createState() => _MetricCardState();
+}
+
+class _MetricCardState extends State<_MetricCard> {
+  static const int _window = 48;
+
+  final List<int> _history = <int>[];
+
+  @override
+  void initState() {
+    super.initState();
+    _record();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MetricCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.live) {
+      _history.clear();
+      return;
+    }
+    if (oldWidget.bytesPerSecond != widget.bytesPerSecond || !oldWidget.live) {
+      _record();
+    }
+  }
+
+  void _record() {
+    if (!widget.live) {
+      return;
+    }
+    _history.add(widget.bytesPerSecond);
+    if (_history.length > _window) {
+      _history.removeRange(0, _history.length - _window);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    final rate = bytesPerSecond;
-    return ContentSection(
+    return Panel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Row(
             children: <Widget>[
-              Icon(icon, size: 20, color: color),
+              Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(
+                    alpha: UsqueTokens.of(context).tint,
+                  ),
+                  borderRadius: BorderRadius.circular(UsqueRadii.chip),
+                ),
+                child: Icon(widget.icon, size: 17, color: widget.color),
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  label,
+                  widget.label,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -807,338 +746,166 @@ class _TrafficReadout extends StatelessWidget {
               ),
               const SizedBox(width: 10),
               Text(
-                rate == null ? '—' : formatRate(rate),
-                key: ValueKey('home-desktop-$direction-rate'),
+                formatRate(widget.bytesPerSecond),
                 style: UsqueTheme.mono(
                   context,
                   size: theme.textTheme.titleMedium?.fontSize,
                   weight: FontWeight.w500,
-                  color: rate == null
-                      ? theme.colorScheme.onSurfaceVariant
-                      : null,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 14),
-          Sparkline(
-            key: ValueKey('home-desktop-$direction-trace'),
-            samples: samples,
-            color: color,
-            height: 96,
-            semanticLabel: '$label · $note',
-          ),
+          Sparkline(samples: List<int>.of(_history), color: widget.color),
         ],
       ),
     );
   }
 }
 
-class _ProtectionSummary extends StatelessWidget {
-  const _ProtectionSummary({required this.controller});
-  final AppController controller;
-  @override
-  Widget build(BuildContext context) =>
-      ControllerSelector<({String key, bool alwaysOn, bool lockdown})>(
-        controller: controller,
-        active: (app) => app.section == AppSection.home,
-        selector: (app) => (
-          key: killSwitchStatusKey(
-            profile: app.activeProfile,
-            snapshot: app.snapshot,
-          ),
-          alwaysOn: app.snapshot.alwaysOn,
-          lockdown: app.snapshot.platformLockdown,
-        ),
-        builder: (context, view) {
-          final strings = controller.strings;
-          return Column(
-            children: [
-              ReadoutRow.text(
-                context,
-                icon: view.key == 'ks_active'
-                    ? LucideIcons.shieldCheck
-                    : view.key == 'ks_error'
-                    ? LucideIcons.shieldAlert
-                    : LucideIcons.shield,
-                label: strings.get('home_kill_switch'),
-                value: strings.get(view.key),
-              ),
-              if (view.alwaysOn) ...[
-                const SizedBox(height: 12),
-                ReadoutRow.text(
-                  context,
-                  icon: LucideIcons.shield,
-                  label: strings.get('always_on'),
-                  value: strings.get('on'),
-                ),
-              ],
-              if (view.lockdown) ...[
-                const SizedBox(height: 12),
-                ReadoutRow.text(
-                  context,
-                  icon: LucideIcons.shieldBan,
-                  label: strings.get('lockdown'),
-                  value: strings.get('on'),
-                ),
-              ],
-            ],
-          );
-        },
-      );
-}
+class _ExitPanel extends StatelessWidget {
+  const _ExitPanel({
+    required this.controller,
+    required this.strings,
+    this.fillRemaining = false,
+  });
 
-typedef _DesktopSessionView = ({
-  String catalogId,
-  String? transport,
-  String? family,
-  DateTime? since,
-  bool connected,
-  String location,
-  String? countryCode,
-  String killKey,
-  bool alwaysOn,
-  bool lockdown,
-});
-
-class _DesktopSessionReadout extends StatelessWidget {
-  const _DesktopSessionReadout({required this.controller});
-  final AppController controller;
-
-  @override
-  Widget build(BuildContext context) => ControllerSelector<_DesktopSessionView>(
-    controller: controller,
-    active: (app) => app.section == AppSection.home,
-    selector: (app) {
-      final snapshot = app.snapshot;
-      final strings = app.strings;
-      return (
-        catalogId: strings.catalogId,
-        transport: snapshot.dataPlane == DataPlaneMode.l4Proxy
-            ? 'L4 / H3'
-            : snapshot.transport,
-        family: snapshot.addressFamily,
-        since: snapshot.connectedAt,
-        connected: snapshot.isConnected,
-        location: snapshot.exit.hasLocation
-            ? snapshot.exit.location
-            : strings.get('not_available'),
-        countryCode: snapshot.exit.countryCode,
-        killKey: killSwitchStatusKey(
-          profile: app.activeProfile,
-          snapshot: snapshot,
-        ),
-        alwaysOn: snapshot.alwaysOn,
-        lockdown: snapshot.platformLockdown,
-      );
-    },
-    builder: (context, view) {
-      final strings = controller.strings;
-      final theme = Theme.of(context);
-      final tokens = UsqueTokens.of(context);
-      Widget metric(String label, Widget value) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 5),
-          value,
-        ],
-      );
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Wrap(
-            spacing: 20,
-            runSpacing: 12,
-            children: [
-              metric(
-                strings.get('protocol'),
-                view.transport == null
-                    ? const EmptyValue(label: '—')
-                    : MonoValue(value: view.transport!),
-              ),
-              metric(
-                strings.get('address_family'),
-                view.family == null
-                    ? const EmptyValue(label: '—')
-                    : MonoValue(value: view.family!),
-              ),
-              metric(strings.get('duration'), LiveDuration(since: view.since)),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Wrap(
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              Icon(
-                view.killKey == 'ks_active'
-                    ? LucideIcons.shieldCheck
-                    : LucideIcons.shield,
-                size: 16,
-              ),
-              Text(
-                strings.get('kill_switch'),
-                style: theme.textTheme.bodySmall,
-              ),
-              Text(
-                strings.get(view.killKey),
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: view.killKey == 'ks_active'
-                      ? tokens.success
-                      : view.killKey == 'ks_error'
-                      ? tokens.danger
-                      : theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              if (view.alwaysOn)
-                Text(
-                  '${strings.get('always_on')} · ${strings.get('on')}',
-                  style: theme.textTheme.bodySmall,
-                ),
-              if (view.lockdown)
-                Text(
-                  '${strings.get('lockdown')} · ${strings.get('on')}',
-                  style: theme.textTheme.bodySmall,
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            key: const ValueKey('home-exit-location'),
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (view.connected)
-                CountryFlag(countryCode: view.countryCode)
-              else
-                const Icon(LucideIcons.mapPin, size: 16),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  view.connected
-                      ? view.location
-                      : strings.get('location_disconnected'),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      );
-    },
-  );
-}
-
-class _HomeDetails extends StatelessWidget {
-  const _HomeDetails({required this.controller, required this.strings});
   final AppController controller;
   final AppStrings strings;
+
+  /// True when the panel sits in the wide right column and should stretch to
+  /// the connection hero's height.
+  final bool fillRemaining;
+
   @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: ExpansionTile(
-      key: const PageStorageKey('home-connection-details'),
-      leading: const Icon(LucideIcons.slidersHorizontal, size: 16),
-      title: Text(
-        strings.get('connection_details'),
-        style: Theme.of(context).textTheme.bodyMedium,
+  Widget build(BuildContext context) {
+    return ControllerSelector<({ExitInfo exit, bool connected})>(
+      controller: controller,
+      active: (controller) => controller.section == AppSection.home,
+      selector: (controller) => (
+        exit: controller.snapshot.exit,
+        connected: controller.snapshot.isConnected,
       ),
-      dense: true,
-      minTileHeight: 48,
-      tilePadding: EdgeInsets.zero,
-      shape: const Border(),
-      collapsedShape: const Border(),
-      children: [_ConnectionDetailsReadout(controller: controller)],
-    ),
-  );
-}
+      builder: (context, view) =>
+          _buildExit(context, view.exit, view.connected),
+    );
+  }
 
-typedef _DetailsView = ({
-  String? ipv4,
-  String? ipv6,
-  bool tunnel,
-  bool systemProxy,
-  bool http,
-  bool socks5,
-});
-
-class _ConnectionDetailsReadout extends StatelessWidget {
-  const _ConnectionDetailsReadout({required this.controller});
-
-  final AppController controller;
-  @override
-  Widget build(BuildContext context) => ControllerSelector<_DetailsView>(
-    controller: controller,
-    active: (app) => app.section == AppSection.home,
-    selector: (app) => (
-      ipv4: app.snapshot.isConnected ? app.snapshot.exit.ipv4 : null,
-      ipv6: app.snapshot.isConnected ? app.snapshot.exit.ipv6 : null,
-      tunnel: app.activeProfile.frontends.tunnel,
-      systemProxy: app.activeProfile.proxy.systemProxy,
-      http: app.activeProfile.frontends.http,
-      socks5: app.activeProfile.frontends.socks5,
-    ),
-    builder: (context, view) {
-      final strings = controller.strings;
-      final theme = Theme.of(context);
-      Widget address(String label, String? value) => ReadoutRow(
-        stackWhenNarrow: true,
-        icon: LucideIcons.network,
-        label: label,
-        value: value == null
-            ? const EmptyValue(label: '—')
-            : MonoValue(value: value),
-      );
-      final interfaces = [
-        if (view.tunnel) strings.tunnelOutputLabel(theme.platform),
-        if (view.systemProxy) strings.get('home_system_proxy'),
-        if (view.http) 'HTTP',
-        if (view.socks5) 'SOCKS5',
-      ];
-      final separator = switch (strings.languageCode) {
-        'zh' => '、',
-        'ar' || 'fa' => '، ',
-        _ => ', ',
-      };
-      return Padding(
-        key: const ValueKey('home-connection-detail-values'),
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            address(strings.get('ipv4'), view.ipv4),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Divider(
-                height: 1,
-                color: UsqueTokens.of(context).hairline,
+  Widget _buildExit(BuildContext context, ExitInfo exit, bool connected) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final bool expandBody = fillRemaining && constraints.hasBoundedHeight;
+        final Widget body = FadeThroughSwitcher(
+          alignment: connected ? Alignment.topLeft : Alignment.center,
+          child: connected
+              ? KeyedSubtree(
+                  key: const ValueKey<String>('exit'),
+                  child: expandBody
+                      ? Align(
+                          alignment: Alignment.topCenter,
+                          child: _exitReadout(context, exit),
+                        )
+                      : _exitReadout(context, exit),
+                )
+              : KeyedSubtree(
+                  key: const ValueKey<String>('idle'),
+                  child: expandBody
+                      ? Center(child: _waitingToConnect(context))
+                      : Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 28),
+                          child: Center(child: _waitingToConnect(context)),
+                        ),
+                ),
+        );
+        return Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              SectionTitle(
+                icon: LucideIcons.globe2,
+                title: strings.get('location'),
+                subtitle: connected ? 'ipleak.net' : null,
               ),
-            ),
-            address(strings.get('ipv6'), view.ipv6),
-            if (interfaces.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(
-                strings
-                    .get('home_enabled_interfaces')
-                    .replaceAll('{interfaces}', interfaces.join(separator)),
-                key: const ValueKey('home-enabled-interfaces'),
-                style: theme.textTheme.bodyMedium,
-              ),
+              const SizedBox(height: 20),
+              if (expandBody) Expanded(child: body) else body,
             ],
-          ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _waitingToConnect(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final Color muted = theme.colorScheme.onSurfaceVariant;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Icon(LucideIcons.mapPinOff, size: 32, color: muted),
+        const SizedBox(height: 10),
+        Text(
+          strings.get('location_disconnected'),
+          style: theme.textTheme.bodySmall?.copyWith(color: muted),
         ),
+      ],
+    );
+  }
+
+  Widget _exitReadout(BuildContext context, ExitInfo exit) {
+    final Color hairline = UsqueTokens.of(context).hairline;
+    final String missing = strings.get('not_available');
+    final Widget divider = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Divider(height: 1, color: hairline),
+    );
+
+    Widget flag;
+    if (exit.flagSvg case final svg? when svg.isNotEmpty) {
+      flag = ClipRRect(
+        borderRadius: BorderRadius.circular(3),
+        child: SvgPicture.string(svg, width: 22, height: 16, fit: BoxFit.cover),
       );
-    },
-  );
+    } else {
+      flag = Icon(
+        LucideIcons.mapPin,
+        size: 17,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        ReadoutRow(
+          leading: flag,
+          label: strings.get('location'),
+          value: exit.hasLocation
+              ? Text(
+                  exit.location,
+                  textAlign: TextAlign.end,
+                  style: Theme.of(context).textTheme.titleSmall,
+                )
+              : EmptyValue(label: missing),
+        ),
+        divider,
+        ReadoutRow(
+          icon: LucideIcons.network,
+          label: strings.get('ipv4'),
+          value: exit.ipv4 == null
+              ? EmptyValue(label: missing)
+              : MonoValue(value: exit.ipv4!),
+        ),
+        divider,
+        ReadoutRow(
+          icon: LucideIcons.network,
+          label: strings.get('ipv6'),
+          value: exit.ipv6 == null
+              ? EmptyValue(label: missing)
+              : MonoValue(value: exit.ipv6!),
+        ),
+      ],
+    );
+  }
 }
 
 /// Catalog key for the Home Kill Switch value. Driven by the profile flag
