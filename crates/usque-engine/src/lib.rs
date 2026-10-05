@@ -1403,7 +1403,7 @@ impl ControlService {
             runtime,
         });
         self.install_network_quality_source(quality_source).await;
-        // Location is diagnostic: report Connected immediately and fill ip.sb
+        // Location is diagnostic: report Connected immediately and fill ipleak.net
         // later, matching the Android runtime. Probe failure must not delay or
         // tear down a healthy session.
         self.spawn_exit_probe(exit_probe, profile_id, session_generation)

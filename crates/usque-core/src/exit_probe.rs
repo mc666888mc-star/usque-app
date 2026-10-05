@@ -11,9 +11,7 @@ use uuid::Uuid;
 
 use crate::ProxyAuthCredentials;
 
-const IPV4_ENDPOINT: &str = "https://api-ipv4.ip.sb/ip";
-const IPV6_ENDPOINT: &str = "https://api-ipv6.ip.sb/ip";
-const GEO_ENDPOINT: &str = "https://api.ip.sb/geoip";
+const IPLEAK_JSON_ENDPOINT: &str = "https://ipleak.net/json/";
 const FLAG_CDN_BASE: &str = "https://cdn.jsdelivr.net/gh/lipis/flag-icons@7.5.0/flags/4x3";
 const MAX_FLAG_SVG_BYTES: usize = 64 * 1024;
 
@@ -133,24 +131,36 @@ impl IpSbProbe {
 
     /// The caller must arrange for this client's sockets to use the tunnel data
     /// plane. Probe failure is diagnostic and must not tear down a healthy VPN.
+    ///
+    /// ipleak.net returns the exit IP and its geolocation in a single JSON
+    /// response; the address family is derived from the returned IP.
     pub async fn probe(&self) -> Result<ExitInfo, ProbeError> {
-        let (ipv4_result, ipv6_result) =
-            tokio::join!(self.fetch_ip(IPV4_ENDPOINT), self.fetch_ip(IPV6_ENDPOINT));
-        let ipv4 = ipv4_result.ok();
-        let ipv6 = ipv6_result.ok();
-
-        if ipv4.is_none() && ipv6.is_none() {
-            return Err(ProbeError::NoAddressFamily);
-        }
-
-        let (mut ipv4_location, mut ipv6_location) =
-            tokio::join!(self.fetch_optional_geo(ipv4), self.fetch_optional_geo(ipv6));
-        if let Some(location) = ipv4_location.as_mut().or(ipv6_location.as_mut())
-            && let Ok(flag_svg) = self.fetch_flag_svg(location).await
-        {
+        let wire: IpLeakWire = self
+            .client
+            .get(IPLEAK_JSON_ENDPOINT)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let ip: IpAddr = wire
+            .ip
+            .trim()
+            .parse()
+            .map_err(|_| ProbeError::InvalidIp(wire.ip.clone()))?;
+        let mut location = GeoLocation::from(wire);
+        location.ip = ip;
+        if let Ok(flag_svg) = self.fetch_flag_svg(&location).await {
             location.flag_svg = Some(flag_svg);
         }
-
+        let (ipv4, ipv6) = match ip {
+            IpAddr::V4(_) => (Some(ip), None),
+            IpAddr::V6(_) => (None, Some(ip)),
+        };
+        let (ipv4_location, ipv6_location) = match ip {
+            IpAddr::V4(_) => (Some(location), None),
+            IpAddr::V6(_) => (None, Some(location)),
+        };
         Ok(ExitInfo {
             ipv4,
             ipv6,
@@ -243,35 +253,41 @@ impl IpSbProbe {
                 .join(format!("{code}.svg")),
         )
     }
+}
 
-    async fn fetch_ip(&self, endpoint: &str) -> Result<IpAddr, ProbeError> {
-        let response = self.client.get(endpoint).send().await?.error_for_status()?;
-        let body = response.text().await?;
-        body.trim()
+#[derive(Debug, Deserialize)]
+struct IpLeakWire {
+    ip: String,
+    country_code: Option<String>,
+    country_name: Option<String>,
+    region_name: Option<String>,
+    city_name: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    isp_name: Option<String>,
+    time_zone: Option<String>,
+}
+
+impl From<IpLeakWire> for GeoLocation {
+    fn from(value: IpLeakWire) -> Self {
+        // ip is filled in by the caller after parsing; placeholder replaced below.
+        let ip = value
+            .ip
+            .trim()
             .parse()
-            .map_err(|_| ProbeError::InvalidIp(body.trim().to_owned()))
-    }
-
-    async fn fetch_optional_geo(&self, ip: Option<IpAddr>) -> Option<GeoLocation> {
-        let ip = ip?;
-        self.fetch_geo(ip).await.ok()
-    }
-
-    async fn fetch_geo(&self, ip: IpAddr) -> Result<GeoLocation, ProbeError> {
-        let response = self
-            .client
-            .get(format!("{GEO_ENDPOINT}/{ip}"))
-            .send()
-            .await?
-            .error_for_status()?;
-        let wire: GeoWire = response.json().await?;
-        if wire.ip != ip {
-            return Err(ProbeError::MismatchedGeoIp {
-                expected: ip,
-                received: wire.ip,
-            });
+            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        Self {
+            ip,
+            country_code: value.country_code,
+            country: value.country_name,
+            region: value.region_name,
+            city: value.city_name,
+            latitude: value.latitude,
+            longitude: value.longitude,
+            organization: value.isp_name,
+            timezone: value.time_zone,
+            flag_svg: None,
         }
-        Ok(wire.into())
     }
 }
 
@@ -298,46 +314,12 @@ fn validate_flag_svg(body: Vec<u8>) -> Result<String, ProbeError> {
     Ok(svg)
 }
 
-#[derive(Debug, Deserialize)]
-struct GeoWire {
-    ip: IpAddr,
-    country_code: Option<String>,
-    country: Option<String>,
-    region: Option<String>,
-    city: Option<String>,
-    latitude: Option<f64>,
-    longitude: Option<f64>,
-    organization: Option<String>,
-    timezone: Option<String>,
-}
-
-impl From<GeoWire> for GeoLocation {
-    fn from(value: GeoWire) -> Self {
-        Self {
-            ip: value.ip,
-            country_code: value.country_code,
-            country: value.country,
-            region: value.region,
-            city: value.city,
-            latitude: value.latitude,
-            longitude: value.longitude,
-            organization: value.organization,
-            timezone: value.timezone,
-            flag_svg: None,
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum ProbeError {
-    #[error("IP.SB request failed: {0}")]
+    #[error("ipleak.net request failed: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("IP.SB returned an invalid IP address: {0}")]
+    #[error("ipleak.net returned an invalid IP address: {0}")]
     InvalidIp(String),
-    #[error("both IPv4 and IPv6 exit checks failed")]
-    NoAddressFamily,
-    #[error("GeoIP response IP mismatch: expected {expected}, received {received}")]
-    MismatchedGeoIp { expected: IpAddr, received: IpAddr },
     #[error("GeoIP response does not contain a valid country code")]
     MissingCountryCode,
     #[error("flag SVG exceeds the safety limit")]

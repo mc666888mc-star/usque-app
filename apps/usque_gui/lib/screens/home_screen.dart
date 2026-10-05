@@ -824,7 +824,7 @@ class _ExitPanel extends StatelessWidget {
               SectionTitle(
                 icon: LucideIcons.globe2,
                 title: strings.get('location'),
-                subtitle: connected ? 'ip.sb' : null,
+                subtitle: connected ? 'ipleak.net' : null,
               ),
               const SizedBox(height: 20),
               if (expandBody) Expanded(child: body) else body,
